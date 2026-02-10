@@ -9,31 +9,38 @@ public class NetworkPlayer : NetworkBehaviour
     [SerializeField] private MeshRenderer _meshRenderer;
     [SerializeField] private TextMeshPro _nameText;
     [SerializeField] private float _speed = 5.0f;
+    [SerializeField] private float _jumpForce = 5.0f;
+    [SerializeField] private float _gravity = -9.81f;
 
     public Network.NetworkedGameManager GameManager { get; set; }
 
     [Header("Networked Properties")]
     [Networked] public Vector3 NetworkedPosition { get; set; }
+    [Networked] public Quaternion NetworkedRotation { get; set; }
+    [Networked] public NetworkBool IsCrouching { get; set; }
     [Networked] public Color PlayerColor { get; set; }
     [Networked] public NetworkString<_32> PlayerName { get; set; }
     [Networked] public int TeamID { get; set; }
     [Networked] public NetworkBool HasRepositioned { get; set; }
 
+    private float _verticalVelocity;
+    private Vector3 _originalScale;
+    private Vector3 _crouchScale = new Vector3(1, 0.5f, 1);
+
 
     #region Fusion Callbacks
     public override void Spawned()
     {
-        Debug.Log($"[DEBUG_LOG] Player Spawned: ID={Object.InputAuthority}, HasInputAuthority={HasInputAuthority}, HasStateAuthority={HasStateAuthority}");
+        _originalScale = this.transform.localScale;
         if (HasInputAuthority) 
         {
-            Debug.Log($"[DEBUG_LOG] Calling RPCs for Player {Object.InputAuthority}: Team={LobbyUI.LocalPlayerTeam}");
             RPC_SetPlayerColor(LobbyUI.LocalPlayerColor);
             RPC_SetPlayerName(LobbyUI.LocalPlayerName);
             RPC_SetPlayerTeam(LobbyUI.LocalPlayerTeam);
 
             Camera.main.transform.SetParent(this.transform);
-            Camera.main.transform.localPosition = new Vector3(0, 10, -10); 
-            Camera.main.transform.localRotation = Quaternion.Euler(45, 0, 0);
+            Camera.main.transform.localPosition = new Vector3(0, 1.5f, -3f); 
+            Camera.main.transform.localRotation = Quaternion.Euler(10, 0, 0);
         }
     }
     
@@ -49,18 +56,54 @@ public class NetworkPlayer : NetworkBehaviour
         if (!HasRepositioned)
         {
             NetworkedPosition = this.transform.position;
+            NetworkedRotation = this.transform.rotation;
             return;
         }
 
         if (!GetInput(out NetworkInputData input)) return;
+
+        Vector3 euler = input.Rotation.eulerAngles;
+        this.transform.rotation = Quaternion.Euler(0, euler.y, 0);
+        NetworkedRotation = this.transform.rotation;
+
+        IsCrouching = input.Buttons.IsSet(Network.PlayerInputButtons.Crouch);
+
+        Vector3 move = new Vector3(input.InputVector.x, 0, input.InputVector.y);
+        move = this.transform.TransformDirection(move); 
         
+        if (move.magnitude > 0.1f)
+        {
+            move = move.normalized;
+        }
+
+        float currentSpeed = IsCrouching ? _speed * 0.5f : _speed;
         
-        this.transform.position +=
-            new Vector3(input.InputVector.normalized.x,
-                0,
-                input.InputVector.normalized.y)
-            * Runner.DeltaTime * _speed;
-            
+        bool isGrounded = this.transform.position.y <= 1.05f; 
+
+        if (isGrounded)
+        {
+            _verticalVelocity = 0;
+            if (input.Buttons.IsSet(Network.PlayerInputButtons.Jump))
+            {
+                _verticalVelocity = _jumpForce;
+            }
+        }
+        else
+        {
+            _verticalVelocity += _gravity * Runner.DeltaTime;
+        }
+
+        Vector3 velocity = move.normalized * currentSpeed;
+        velocity.y = _verticalVelocity;
+
+        this.transform.position += velocity * Runner.DeltaTime;
+        
+        if (this.transform.position.y < 1.0f)
+        {
+            Vector3 pos = this.transform.position;
+            pos.y = 1.0f;
+            this.transform.position = pos;
+        }
             
         NetworkedPosition = this.transform.position;
     }
@@ -68,6 +111,16 @@ public class NetworkPlayer : NetworkBehaviour
     public override void Render()
     {
         this.transform.position = NetworkedPosition;
+        this.transform.rotation = NetworkedRotation;
+
+        if (IsCrouching)
+        {
+            this.transform.localScale = _crouchScale;
+        }
+        else
+        {
+            this.transform.localScale = _originalScale;
+        }
 
         if (_meshRenderer != null && _meshRenderer.material.color != PlayerColor)
         {
@@ -102,16 +155,13 @@ public class NetworkPlayer : NetworkBehaviour
     [Rpc(RpcSources.InputAuthority, RpcTargets.StateAuthority)]
     private void RPC_SetPlayerTeam(int teamID)
     {
-        Debug.Log($"[DEBUG_LOG] RPC_SetPlayerTeam received on Server for Player {Object.InputAuthority}: teamID argument={teamID}");
         if (HasStateAuthority)
         {
             this.TeamID = teamID;
-            Debug.Log($"[DEBUG_LOG] Player {Object.InputAuthority} TeamID set to {this.TeamID}");
             
             if (GameManager == null)
             {
                 GameManager = FindFirstObjectByType<Network.NetworkedGameManager>();
-                Debug.Log($"[DEBUG_LOG] GameManager was null, search result: {GameManager != null}");
             }
 
             if (!HasRepositioned)
@@ -120,22 +170,18 @@ public class NetworkPlayer : NetworkBehaviour
                 if (GameManager != null)
                 {
                     teamSpawn = GameManager.GetSpawnPosition(teamID);
-                    Debug.Log($"[DEBUG_LOG] Got spawn position from GameManager for team {teamID}: {teamSpawn}");
                 }
                 else
                 {
                     teamSpawn = teamID == 1 ? new Vector3(-10, 1, -10) : new Vector3(10, 1, 10);
-                    Debug.Log($"[DEBUG_LOG] GameManager not found. Using local fallback spawn position for team {teamID}: {teamSpawn}");
                 }
                 
                 this.transform.position = teamSpawn;
                 this.NetworkedPosition = teamSpawn;
                 HasRepositioned = true;
-                Debug.Log($"[DEBUG_LOG] Repositioned Player {Object.InputAuthority} to Team {teamID} at {teamSpawn}. NetworkedPosition is now {NetworkedPosition}");
             }
             else
             {
-                Debug.Log($"[DEBUG_LOG] Player {Object.InputAuthority} already repositioned. Re-calculating position anyway to ensure consistency.");
                 Vector3 teamSpawn = Vector3.zero;
                 if (GameManager != null)
                 {
@@ -147,7 +193,6 @@ public class NetworkPlayer : NetworkBehaviour
                 }
                 this.transform.position = teamSpawn;
                 this.NetworkedPosition = teamSpawn;
-                Debug.Log($"[DEBUG_LOG] Force-repositioned Player {Object.InputAuthority} to Team {teamID} at {teamSpawn}");
             }
         }
     }

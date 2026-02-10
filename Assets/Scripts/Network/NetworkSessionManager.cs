@@ -7,6 +7,12 @@ using UnityEngine.SceneManagement;
 
 namespace Network
 {
+    public enum PlayerInputButtons
+    {
+        Jump = 0,
+        Crouch = 1,
+    }
+
     public class NetworkSessionManager : MonoBehaviour, INetworkRunnerCallbacks
     {
         #region Public Variables
@@ -74,6 +80,15 @@ namespace Network
             var data = new NetworkInputData();
             data.InputVector = new Vector2(Input.GetAxisRaw("Horizontal"), 
                 Input.GetAxisRaw("Vertical"));
+            
+            data.Buttons.Set(PlayerInputButtons.Jump, Input.GetButton("Jump"));
+            data.Buttons.Set(PlayerInputButtons.Crouch, Input.GetKey(KeyCode.LeftControl) || Input.GetKey(KeyCode.C));
+            
+            if (Camera.main != null)
+            {
+                data.Rotation = Camera.main.transform.rotation;
+            }
+
             input.Set(data);
         }
     
